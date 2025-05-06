@@ -1,6 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:file_picker/file_picker.dart';
+import 'package:file_selector/file_selector.dart';
 
 void main() {
   runApp(MaterialApp(
@@ -18,11 +18,15 @@ class _ImageToArduinoAppState extends State<ImageToArduinoApp> {
   File? _selectedImage;
 
   Future<void> _chooseImage() async {
-    final result = await FilePicker.platform.pickFiles(type: FileType.image);
+    const XTypeGroup typeGroup = XTypeGroup(
+      label: 'images',
+      extensions: ['jpg', 'jpeg', 'png'],
+    );
+    final XFile? file = await openFile(acceptedTypeGroups: [typeGroup]);
 
-    if (result != null && result.files.single.path != null) {
+    if (file != null) {
       setState(() {
-        _selectedImage = File(result.files.single.path!);
+        _selectedImage = File(file.path);
       });
     }
   }
