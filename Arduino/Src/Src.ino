@@ -1,321 +1,194 @@
-/*How to make a mini CNC machine using Arduino
-   Home Page
-*/
-
 #include <Servo.h>
 #include <AFMotor.h>
 
-AF_Stepper motory(48, 1);
-AF_Stepper motorx(48, 2);
-Servo servo;
+// --- Constants ---
+const int STEPS_PER_REV = 48;
+const int MOTOR_X_PORT = 1;
+const int MOTOR_Y_PORT = 2;
+const int SERVO_PIN = 10;
+const int PEN_UP_ANGLE = 0;
+const int PEN_DOWN_ANGLE = 90;
 
-#define penup 115
-#define pendown 160
-#define Spin 10
+const float STEPS_PER_MM_X = 273.3;
+const float STEPS_PER_MM_Y = 192.3;
 
-//Structures, global variables
-struct point {
-  float x;
-  float y;
-  float z;
+const float DRAWING_AREA_X_MIN = 0;
+const float DRAWING_AREA_X_MAX = 15.2;
+const float DRAWING_AREA_Y_MIN = 0;
+const float DRAWING_AREA_Y_MAX = 15.2;
+
+const float Z_MAX = 1;
+const float Z_MIN = 0;
+
+const float STEP_INCREMENT = 1;
+const int STEP_DELAY = 1;
+const int LINE_DELAY = 0;
+
+const bool VERBOSE = true;
+const int SERIAL_BAUD = 9600;
+
+unsigned long lastMoveTime = 0;
+bool penLoweredAfterMove = false;
+
+
+// --- Hardware Setup ---
+AF_Stepper motorX(STEPS_PER_REV, MOTOR_X_PORT);
+AF_Stepper motorY(STEPS_PER_REV, MOTOR_Y_PORT);
+Servo penServo;
+
+// --- Plotter State ---
+struct Point {
+  float x = DRAWING_AREA_X_MIN;
+  float y = DRAWING_AREA_Y_MIN;
+  float z = Z_MAX;
 };
 
-//Current position of plothead
-struct point actuatorPos;
+Point currentPos;
 
-//Drawing settings, should be OK
-float StepInc = 1;
-int StepDelay = 1;
-int LineDelay = 0;
-
-//Steps per width and height of the drawing area
-float StepsPerMillimeterX = 164.0;
-float StepsPerMillimeterY = 250.0;
-
-//Max and min values of the drawing area(mm)
-float Xmin = 0;
-float Xmax = 38;
-float Ymin = 0;
-float Ymax = 38;
-float Zmin = 0;
-float Zmax = 1;
-
-float Xpos = Xmin;
-float Ypos = Ymin;
-float Zpos = Zmax;
-
-// Set to true to get debug output.
-boolean verbose = true;
-
-
+// --- Setup ---
 void setup() {
-  Serial.begin( 9600 );
-  servo.attach(Spin);
-  servo.write(penup);
-  delay(100);
-  motorx.setSpeed(600);
-  motory.setSpeed(600);
-  Serial.println("Your CNC machine is ready...");
+  Serial.begin(SERIAL_BAUD);
+
+  motorX.setSpeed(600);
+  motorY.setSpeed(600);
+  
+  penServo.attach(SERVO_PIN);
+  liftPen();
+
+  Serial.println("CNC Plotter Ready.");
 }
 
+// --- Main Loop ---
 void loop() {
-  delay(100);
-  char line[512];
-  char c;
-  int lineIndex;
-  bool lineIsComment, lineSemiColon;
+  static char inputLine[512];
+  static int index = 0;
 
-  lineIndex = 0;
-  lineSemiColon = false;
-  lineIsComment = false;
+  while (Serial.available()) {
+    char c = Serial.read();
 
-  while (1) {
-
-
-    while ( Serial.available() > 0 ) {
-      c = Serial.read();
-      if (( c == '\n') || (c == '\r') ) {             
-        if ( lineIndex > 0 ) {                        
-          line[ lineIndex ] = '\0';                   
-          if (verbose) {
-            Serial.print( "Received : ");
-            Serial.println( line );
-          }
-          processIncomingLine( line, lineIndex );
-          lineIndex = 0;
+    if (c == '\n' || c == '\r') {
+      if (index > 0) {
+        inputLine[index] = '\0';
+        if (VERBOSE) {
+          Serial.print("Received: ");
+          Serial.println(inputLine);
         }
-        else {
-          // Empty or comment line. Skip block.
-        }
-        lineIsComment = false;
-        lineSemiColon = false;
-        Serial.println("ok");
+        parseGCode(inputLine);
+        index = 0;
       }
-      else {
-        if ( (lineIsComment) || (lineSemiColon) ) {   
-          if ( c == ')' )  lineIsComment = false;     
-        }
-        else {
-          if ( c <= ' ' ) {                           
-          }
-          else if ( c == '/' ) {                    
-          }
-          else if ( c == '(' ) {                    
-            lineIsComment = true;
-          }
-          else if ( c == ';' ) {
-            lineSemiColon = true;
-          }
-          else if ( lineIndex >= 512 - 1 ) {
-            Serial.println( "ERROR - lineBuffer overflow" );
-            lineIsComment = false;
-            lineSemiColon = false;
-          }
-          else if ( c >= 'a' && c <= 'z' ) {        
-            line[ lineIndex++ ] = c - 'a' + 'A';
-          }
-          else {
-            line[ lineIndex++ ] = c;
-          }
-        }
+      Serial.println("ok");
+    } else if (index < sizeof(inputLine) - 1) {
+      // Filter comments
+      if (c != ';' && c != '(' && c != ')') {
+        inputLine[index++] = (c >= 'a' && c <= 'z') ? c - 32 : c;
       }
     }
   }
+  if (!penLoweredAfterMove && millis() - lastMoveTime > 10000) {
+  lowerPen();
+  penLoweredAfterMove = true;
 }
 
-void processIncomingLine( char* line, int charNB ) {
-  int currentIndex = 0;
-  char buffer[ 64 ];                                 
-  struct point newPos;
+}
 
-  newPos.x = 0.0;
-  newPos.y = 0.0;
+// --- G-Code Parser ---
+void parseGCode(const char* line) {
+  if (strstr(line, "G0") || strstr(line, "G1")) {
+    float x = currentPos.x, y = currentPos.y;
 
-  while ( currentIndex < charNB ) {
-    switch ( line[ currentIndex++ ] ) {              
-      case 'U':
-        penUp();
-        break;
-      case 'D':
-        penDown();
-        break;
-      case 'G':
-        buffer[0] = line[ currentIndex++ ];          
-        //      buffer[1] = line[ currentIndex++ ];
-        //      buffer[2] = '\0';
-        buffer[1] = '\0';
+    char* xPtr = strchr(line, 'X');
+    if (xPtr) x = atof(xPtr + 1);
 
-        switch ( atoi( buffer ) ) {                  
-          case 0:   
-          case 1:
-            // /!\ Dirty - Suppose that X is before Y
-            char* indexX = strchr( line + currentIndex, 'X' ); 
-            char* indexY = strchr( line + currentIndex, 'Y' );
-            if ( indexY <= 0 ) {
-              newPos.x = atof( indexX + 1);
-              newPos.y = actuatorPos.y;
-            }
-            else if ( indexX <= 0 ) {
-              newPos.y = atof( indexY + 1);
-              newPos.x = actuatorPos.x;
-            }
-            else {
-              newPos.y = atof( indexY + 1);
-              indexY = '\0';
-              newPos.x = atof( indexX + 1);
-            }
-            drawLine(newPos.x, newPos.y );
-            //        Serial.println("ok");
-            actuatorPos.x = newPos.x;
-            actuatorPos.y = newPos.y;
-            break;
-        }
-        break;
-      case 'M':
-        buffer[0] = line[ currentIndex++ ];        
-        buffer[1] = line[ currentIndex++ ];
-        buffer[2] = line[ currentIndex++ ];
-        buffer[3] = '\0';
-        switch ( atoi( buffer ) ) {
-          case 300:
-            {
-              char* indexS = strchr( line + currentIndex, 'S' );
-              float Spos = atof( indexS + 1);
-              //         Serial.println("ok");
-              if (Spos == 30) {
-                penDown();
-              }
-              if (Spos == 50) {
-                penUp();
-              }
-              break;
-            }
-          case 114:                                
-            Serial.print( "Absolute position : X = " );
-            Serial.print( actuatorPos.x );
-            Serial.print( "  -  Y = " );
-            Serial.println( actuatorPos.y );
-            break;
-          default:
-            Serial.print( "Command not recognized : M");
-            Serial.println( buffer );
-        }
+    char* yPtr = strchr(line, 'Y');
+    if (yPtr) y = atof(yPtr + 1);
+
+    moveTo(x, y);
+  } else if (strstr(line, "M300")) {
+    char* sPtr = strchr(line, 'S');
+    if (sPtr) {
+      int sVal = atoi(sPtr + 1);
+      if (sVal == 30) lowerPen();
+      if (sVal == 50) liftPen();
     }
+  } else if (strstr(line, "M114")) {
+    Serial.print("Position - X: ");
+    Serial.print(currentPos.x);
+    Serial.print(" Y: ");
+    Serial.println(currentPos.y);
+  } else if (strchr(line, 'U')) {
+    liftPen();
+  } else if (strchr(line, 'D')) {
+    lowerPen();
   }
 }
 
-void drawLine(float x1, float y1) {
+// --- Motion Functions ---
+void moveTo(float xTarget, float yTarget) {
+  // Clamp values
+  xTarget = constrain(xTarget, DRAWING_AREA_X_MIN, DRAWING_AREA_X_MAX);
+  yTarget = constrain(yTarget, DRAWING_AREA_Y_MIN, DRAWING_AREA_Y_MAX);
 
-  if (verbose) {
-    Serial.print("fx1, fy1: ");
-    Serial.print(x1);
-    Serial.print(",");
-    Serial.print(y1);
-    Serial.println("");
-  }
+  // Convert to steps (no division!)
+  long xSteps = xTarget * STEPS_PER_MM_X;
+  long ySteps = -yTarget * STEPS_PER_MM_Y; // Flip Y-axis
 
-  y1 = y1 * -1;
+  long xCurrent = currentPos.x * STEPS_PER_MM_X;
+  long yCurrent = -currentPos.y * STEPS_PER_MM_Y;
 
-  
-  if (x1 >= Xmax) {
-    x1 = Xmax;
-  }
-  if (x1 <= Xmin) {
-    x1 = Xmin;
-  }
-  if (y1 >= Ymax) {
-    y1 = Ymax;
-  }
-  if (y1 <= Ymin) {
-    y1 = Ymin;
-  }
+  long dx = abs(xSteps - xCurrent);
+  long dy = abs(ySteps - yCurrent);
+  int sx = (xSteps > xCurrent) ? STEP_INCREMENT : -STEP_INCREMENT;
+  int sy = (ySteps > yCurrent) ? STEP_INCREMENT : -STEP_INCREMENT;
 
-
-
-  if (verbose) {
-    Serial.print("Xpos, Ypos: ");
-    Serial.print(Xpos);
-    Serial.print(",");
-    Serial.print(Ypos);
-    Serial.println("");
-  }
-
-  if (verbose) {
-    Serial.print("x1, y1: ");
-    Serial.print(x1);
-    Serial.print(",");
-    Serial.print(y1);
-    Serial.println("");
-  }
-
-  
-  x1 = (int)(x1 * StepsPerMillimeterX / 2);
-  y1 = (int)(y1 * StepsPerMillimeterY / 2);
-  float x0 = Xpos;
-  float y0 = Ypos;
-
-
-  long dx = abs(x1 - x0);
-  long dy = abs(y1 - y0);
-  int sx = x0 < x1 ? StepInc : -StepInc;
-  int sy = y0 < y1 ? StepInc : -StepInc;
-
-  long i;
-  long over = 0;
+  long error = 0;
 
   if (dx > dy) {
-    for (i = 0; i < dx; ++i) {
-      motorx.onestep(sx, MICROSTEP);
-      over += dy;
-      if (over >= dx) {
-        over -= dx;
-        motory.onestep(sy, MICROSTEP);
+    for (long i = 0; i < dx; ++i) {
+      motorX.onestep(sx, MICROSTEP);
+      error += dy;
+      if (error >= dx) {
+        motorY.onestep(sy, MICROSTEP);
+        error -= dx;
       }
-      delay(StepDelay);
+      delay(STEP_DELAY);
     }
   } else {
-    for (i = 0; i < dy; ++i) {
-      motory.onestep(sy, MICROSTEP);
-      over += dx;
-      if (over >= dy) {
-        over -= dy;
-        motorx.onestep(sx, MICROSTEP);
+    for (long i = 0; i < dy; ++i) {
+      motorY.onestep(sy, MICROSTEP);
+      error += dx;
+      if (error >= dy) {
+        motorX.onestep(sx, MICROSTEP);
+        error -= dy;
       }
-      delay(StepDelay);
+      delay(STEP_DELAY);
     }
   }
 
-  if (verbose) {
-    Serial.print("dx, dy:");
-    Serial.print(dx);
-    Serial.print(",");
-    Serial.print(dy);
-    Serial.println("");
-  }
+  delay(LINE_DELAY);
 
-  if (verbose) {
-    Serial.print("Going to (");
-    Serial.print(x0);
-    Serial.print(",");
-    Serial.print(y0);
-    Serial.println(")");
-  }
+  currentPos.x = xTarget;
+  currentPos.y = yTarget;
 
-  
-  delay(LineDelay);
-  Xpos = x1;
-  Ypos = y1;
+  if (VERBOSE) {
+    Serial.print("Moved to X: ");
+    Serial.print(currentPos.x);
+    Serial.print(", Y: ");
+    Serial.println(currentPos.y);
+  }
+  lastMoveTime = millis();
+penLoweredAfterMove = false;
+
 }
 
-
-void penUp() {
-  servo.write(penup);
+// --- Pen Functions ---
+void liftPen() {
+  penServo.write(PEN_UP_ANGLE);
+  currentPos.z = Z_MAX;
   delay(50);
-  Zpos = Zmax;
 }
 
-void penDown() {
-  servo.write(pendown);
+void lowerPen() {
+  penServo.write(PEN_DOWN_ANGLE);
+  currentPos.z = Z_MIN;
   delay(50);
-  Zpos = Zmin;
 }
