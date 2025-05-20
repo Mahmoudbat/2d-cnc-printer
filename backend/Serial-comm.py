@@ -1,14 +1,18 @@
 import serial
 import time
 import os
+import math
 
 # Configuration
 script_dir = os.path.dirname(os.path.abspath(__file__))
 temp_dir = os.path.join(script_dir, "../Temp")
 GCODE_FILE = os.path.join(temp_dir, "output.gcode")
-SERIAL_PORT = '/dev/ttyACM0'  # Change to your desired COM port (e.g., '/dev/ttyUSB0' on Linux)
-BAUD_RATE = 9600  # Must match the baud rate in the Arduino code
-VERBOSE = True  # Set to True to print debug statements
+SERIAL_PORT = '/dev/ttyACM0'  
+BAUD_RATE = 9600  
+VERBOSE = True  
+
+
+
 
 class GCodeSender:
     def __init__(self, port, baud_rate):
@@ -48,16 +52,17 @@ class GCodeSender:
         while self.streaming and self.current_line < len(self.gcodes):
             line = self.gcodes[self.current_line]
             if VERBOSE:
-                print(f"Sending: {line}")
+                print(f"Sending: {line} ({self.current_line + 1})")
             self.serial_connection.write((line + '\n').encode())
             while True:
                 response = self.serial_connection.readline().decode().strip()
+                # trying not to overwhelm the arduino with too many requests
                 if response:
                     if VERBOSE:
                         print(f"Arduino response: {response}")
                     if response.startswith("ok") or response.startswith("error"):
                         self.current_line += 1
-                        break  # Only send next line after Arduino replies
+                        break  
                 else:
                     time.sleep(0.05)  # Give Arduino more time to reply if needed
 
@@ -74,7 +79,6 @@ class GCodeSender:
                 print(f"Closed serial connection to {self.port_name}.")
 
 
-# Main execution
 if __name__ == "__main__":
     sender = GCodeSender(SERIAL_PORT, BAUD_RATE)
     try:
@@ -91,6 +95,5 @@ if __name__ == "__main__":
         print("\nProgram interrupted. Closing serial port...")
 
     finally:
-        # Ensure the serial port is closed gracefully
         sender.close_serial_port()
         print("Shutdown complete.")

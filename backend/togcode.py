@@ -1,241 +1,138 @@
-import xml.etree.ElementTree as ET
 import os
+import math
+from svgpathtools import svg2paths
+from svgpathtools import Path, Line, QuadraticBezier, CubicBezier, Arc
 
 # Configuration
-XY_FEEDRATE = 3500.0  # Feedrate for G1 moves (removed from the G-code)
-PEN_UP_ANGLE = 50.0  # Servo angle when pen is up
-PEN_DOWN_ANGLE = 30.0  # Servo angle when pen is down
-STEPS_PER_MM_X = 273.3  # Steps per mm for X-axis
-STEPS_PER_MM_Y = 192.3  # Steps per mm for Y-axis
-FLIP_Y = True  # Flip the Y-axis (depending on your CNC setup)
-script_dir = os.path.dirname(os.path.abspath(__file__))
-temp_dir = os.path.join(script_dir, "../Temp")
+temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../Temp")
 input_svg = os.path.join(temp_dir, "output.svg")
 output_gcode = os.path.join(temp_dir, "output.gcode")
+verbose = False
 
-# Boundary dimensions in millimeters
-BOUNDARY_X = 15.2
-BOUNDARY_Y = 15.2
+# Machine settings
+XY_FEEDRATE = 3500.0
+PEN_UP = 50
+PEN_DOWN = 30
+STEPS_PER_MM_X = 192.3
+STEPS_PER_MM_Y = 192.3
+FLIP_Y = False
+FLIP_X = False
 
-# Adjust scaling based on the steps per mm
-SCALE_X = 1 / STEPS_PER_MM_X  # Adjust to inverse of steps per mm for X-axis
-SCALE_Y = 1 / STEPS_PER_MM_Y  # Adjust to inverse of steps per mm for Y-axis
+# Boundaries in mm
+MAX_X = 16
+MAX_Y = 14.4
 
+SCALE_X = 1 / STEPS_PER_MM_X
+SCALE_Y = 1 / STEPS_PER_MM_Y
+
+def flip_coords(x, y):
+    if FLIP_X:
+        x = MAX_X - x
+    if FLIP_Y:
+        y = MAX_Y - y
+    return x, y
 
 class GCodeContext:
-    def __init__(self, pen_up_angle=PEN_UP_ANGLE, pen_down_angle=PEN_DOWN_ANGLE):
-        self.pen_up_angle = pen_up_angle
-        self.pen_down_angle = pen_down_angle
-        self.gcode_lines = []
+    def __init__(self):
+        self.gcode = []
+        self.pen_is_down = False
 
     def pen_up(self):
-        self.gcode_lines.append(f"M300 S{self.pen_up_angle:.2f}")
+        if self.pen_is_down:
+            self.gcode.append(f"M300 S{PEN_UP}")
+            self.gcode.append("G4 P100")
+            self.pen_is_down = False
 
     def pen_down(self):
-        self.gcode_lines.append(f"M300 S{self.pen_down_angle:.2f}")
+        if not self.pen_is_down:
+            self.gcode.append(f"M300 S{PEN_DOWN}")
+            self.gcode.append("G4 P100")
+            self.pen_is_down = True
 
-    def move_to(self, x, y):
-        self.gcode_lines.append(f"G1 X{x:.2f} Y{y:.2f}")  # Removed feedrate
+    def move_to(self, x, y, rapid=False):
+        x, y = flip_coords(x, y)
+        move_cmd = "G0" if rapid else "G1"
+        if rapid:
+            self.gcode.append(f"{move_cmd} X{x:.2f} Y{y:.2f}")
+        else:
+            self.gcode.append(f"{move_cmd} X{x:.2f} Y{y:.2f} F{XY_FEEDRATE}")
 
     def generate_gcode(self):
-        print(f"DEBUG: Total GCode commands generated: {len(self.gcode_lines)}")
+        self.pen_up()
+        self.gcode.append("G1 X0 Y0")
+        return "\n".join(self.gcode)
 
-        # Add a G1 X0 Y0 move at the end of the G-code
-        self.gcode_lines.append("G1 X0 Y0")
+def path_to_points(path, num_samples = 4):
+    """Convert an svgpathtools Path into a list of (x, y) points, sampling curves."""
+    points = []
+    for seg in path:
+        for i in range(num_samples+1):
+            t = i / num_samples
+            pt = seg.point(t)
+            x, y = pt.real, pt.imag
+            points.append((x * SCALE_X, y * SCALE_Y))
+    # Remove duplicate consecutive points:
+    filtered = []
+    for pt in points:
+        if not filtered or math.hypot(pt[0]-filtered[-1][0], pt[1]-filtered[-1][1]) > 1e-4:
+            filtered.append(pt)
+    return filtered
 
-        return "\n".join(self.gcode_lines)
+def scale_and_center(paths, max_x=MAX_X, max_y=MAX_Y):
+    all_pts = [pt for path in paths for pt in path]
+    if not all_pts:
+        return paths
+    min_x = min(x for x, y in all_pts)
+    min_y = min(y for x, y in all_pts)
+    max_x0 = max(x for x, y in all_pts)
+    max_y0 = max(y for x, y in all_pts)
+    width = max_x0 - min_x
+    height = max_y0 - min_y
+    if width == 0 or height == 0:
+        scale = 1.0
+    else:
+        scale = min(max_x / width, max_y / height)
+    x_offset = (max_x - width * scale) / 2
+    y_offset = (max_y - height * scale) / 2
+    new_paths = []
+    for path in paths:
+        new_paths.append([
+            ( (x - min_x) * scale + x_offset,
+              (y - min_y) * scale + y_offset )
+            for (x, y) in path
+        ])
+    return new_paths
 
-
-class SVGToGCodeConverter:
-    def __init__(self, svg_file, gcode_context):
-        self.svg_file = svg_file
-        self.gcode_context = gcode_context
-        self.namespace = {"svg": "http://www.w3.org/2000/svg"}
-
-    def parse_svg(self):
-        try:
-            tree = ET.parse(self.svg_file)
-            root = tree.getroot()
-            paths = []
-
-            for elem in root.findall(".//svg:path", self.namespace):
-                d = elem.attrib.get("d")
-                if d:
-                    print(f"DEBUG: Found path d attribute: {d[:50]}...")
-                    parsed_path = self.parse_path_data(d)
-                    if parsed_path:
-                        print(f"DEBUG: Parsed path with {len(parsed_path)} points.")
-                        paths.append(parsed_path)
-            print(f"DEBUG: Total paths parsed: {len(paths)}")
-            return paths
-        except ET.ParseError as e:
-            print(f"ERROR: Failed to parse SVG file: {e}")
-            return []
-
-    def parse_path_data(self, path_data):
-        parsed_commands = []
-        current_command = ""
-        for char in path_data:
-            if char.isalpha():
-                if current_command:
-                    parsed_commands.append(current_command.strip())
-                current_command = char
-            else:
-                current_command += char
-        if current_command:
-            parsed_commands.append(current_command.strip())
-
-        coordinates = []
-        current_x, current_y = 0.0, 0.0
-        i = 0
-        while i < len(parsed_commands):
-            cmd = parsed_commands[i][0]
-            values = parsed_commands[i][1:].strip()
-            values = list(map(float, values.replace(',', ' ').split())) if values else []
-
-            if cmd in {"M", "m"}:
-                for j in range(0, len(values), 2):
-                    x, y = values[j], values[j + 1]
-                    if cmd == "m":
-                        x = current_x + x * SCALE_X
-                        y = current_y + y * SCALE_Y
-                    else:
-                        x = x * SCALE_X
-                        y = y * SCALE_Y
-
-                    current_x = x
-                    current_y = y
-                    coordinates.append((current_x, current_y))
-                    print(f"DEBUG: {cmd} MoveTo ({current_x:.2f}, {current_y:.2f})")
-                i += 1
-
-            elif cmd in {"L", "l"}:
-                for j in range(0, len(values), 2):
-                    x, y = values[j], values[j + 1]
-                    if cmd == "l":
-                        x = current_x + x * SCALE_X
-                        y = current_y + y * SCALE_Y
-                    else:
-                        x = x * SCALE_X
-                        y = y * SCALE_Y
-
-                    current_x = x
-                    current_y = y
-                    coordinates.append((current_x, current_y))
-                    print(f"DEBUG: {cmd} LineTo ({current_x:.2f}, {current_y:.2f})")
-                i += 1
-
-            elif cmd in {"C", "c"}:
-                for j in range(0, len(values), 6):
-                    x1, y1 = values[j], values[j + 1]
-                    x2, y2 = values[j + 2], values[j + 3]
-                    x, y = values[j + 4], values[j + 5]
-
-                    if cmd == "c":
-                        x1 += current_x / SCALE_X
-                        y1 += current_y / SCALE_Y
-                        x2 += current_x / SCALE_X
-                        y2 += current_y / SCALE_Y
-                        x += current_x / SCALE_X
-                        y += current_y / SCALE_Y
-
-                    x1 *= SCALE_X
-                    y1 *= SCALE_Y
-                    x2 *= SCALE_X
-                    y2 *= SCALE_Y
-                    x *= SCALE_X
-                    y *= SCALE_Y
-
-                    steps = 10  # You can increase for smoother curves
-                    for t in range(steps + 1):
-                        t /= steps
-                        xt = (1 - t) ** 3 * current_x + 3 * (1 - t) ** 2 * t * x1 + 3 * (
-                                    1 - t) * t ** 2 * x2 + t ** 3 * x
-                        yt = (1 - t) ** 3 * current_y + 3 * (1 - t) ** 2 * t * y1 + 3 * (
-                                    1 - t) * t ** 2 * y2 + t ** 3 * y
-                        coordinates.append((xt, yt))
-
-                    current_x = x
-                    current_y = y
-                    print(f"DEBUG: {cmd} Cubic Bézier to ({current_x:.2f}, {current_y:.2f})")
-                i += 1
-
-            elif cmd in {"Z", "z"}:
-                if coordinates:
-                    coordinates.append(coordinates[0])
-                    print(f"DEBUG: {cmd} ClosePath to ({coordinates[0][0]:.2f}, {coordinates[0][1]:.2f})")
-                i += 1
-
-            else:
-                print(f"DEBUG: Unsupported or malformed command: {cmd}")
-                i += 1
-
-        return coordinates
-
-    def scale_and_center_paths(self, paths):
-        # Determine the bounds of the image
-        min_x = min(point[0] for path in paths for point in path)
-        max_x = max(point[0] for path in paths for point in path)
-        min_y = min(point[1] for path in paths for point in path)
-        max_y = max(point[1] for path in paths for point in path)
-
-        width = max_x - min_x
-        height = max_y - min_y
-
-        # Calculate scaling factor
-        scale_factor = min(BOUNDARY_X / width, BOUNDARY_Y / height)
-
-        # Calculate translation to center the drawing
-        x_offset = (BOUNDARY_X - width * scale_factor) / 2
-        y_offset = (BOUNDARY_Y - height * scale_factor) / 2
-
-        # Scale and translate all paths
-        scaled_paths = []
-        for path in paths:
-            scaled_path = [
-                ((x - min_x) * scale_factor + x_offset, (y - min_y) * scale_factor + y_offset)
-                for x, y in path
-            ]
-            scaled_paths.append(scaled_path)
-
-        return scaled_paths
-
-    def convert_to_gcode(self):
-        paths = self.parse_svg()
-        if not paths:
-            print("DEBUG: No paths found in the SVG")
-            return
-
-        # Scale and center paths to fit within the boundary
-        paths = self.scale_and_center_paths(paths)
-
-        for idx, path in enumerate(paths):
-            if not path:
-                print(f"DEBUG: Skipping empty path at index {idx}")
-                continue
-            print(f"DEBUG: Processing path {idx} with {len(path)} points.")
-            self.gcode_context.pen_up()
-            self.gcode_context.move_to(*path[0])
-            self.gcode_context.pen_down()
-
-            for point in path[1:]:
-                self.gcode_context.move_to(*point)
-
-            self.gcode_context.pen_up()
-
-
-def main():
-    gcode_context = GCodeContext()
-    converter = SVGToGCodeConverter(input_svg, gcode_context)
-
-    print(f"DEBUG: Starting conversion for {input_svg}")
-    converter.convert_to_gcode()
-
-    gcode_content = gcode_context.generate_gcode()
+def convert_svg_to_gcode(input_svg, output_gcode):
+    paths, _ = svg2paths(input_svg)
+    all_path_pts = []
+    for path in paths:
+        pts = path_to_points(path)
+        if pts:
+            all_path_pts.append(pts)
+    # Center and scale
+    all_path_pts = scale_and_center(all_path_pts)
+    # GCode generation
+    ctx = GCodeContext()
+    for path in all_path_pts:
+        if len(path) < 2:
+            continue
+        ctx.pen_up()
+        ctx.move_to(*path[0], rapid=True)
+        ctx.pen_down()
+        last_x, last_y = path[0]
+        for x, y in path[1:]:
+            # Only add if distance is significant
+            if math.hypot(x-last_x, y-last_y) > 0.01:
+                ctx.move_to(x, y)
+                last_x, last_y = x, y
+        ctx.pen_up()
+    # Home
+    ctx.pen_up()
+    ctx.move_to(0, 0, rapid=True)
     with open(output_gcode, "w") as f:
-        f.write(gcode_content)
-    print(f"GCode written to {output_gcode}")
-
+        f.write(ctx.generate_gcode())
+    print(f"✅ Successfully converted SVG to GCode and saved to {output_gcode}")
 
 if __name__ == "__main__":
-    main()
+    convert_svg_to_gcode(input_svg, output_gcode)

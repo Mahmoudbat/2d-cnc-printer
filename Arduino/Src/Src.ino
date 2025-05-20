@@ -15,7 +15,7 @@ const float STEPS_PER_MM_Y = 192.3;
 const float DRAWING_AREA_X_MIN = 0;
 const float DRAWING_AREA_X_MAX = 15.2;
 const float DRAWING_AREA_Y_MIN = 0;
-const float DRAWING_AREA_Y_MAX = 15.2;
+const float DRAWING_AREA_Y_MAX = 14.4;
 
 const float Z_MAX = 1;
 const float Z_MIN = 0;
@@ -29,14 +29,16 @@ const int SERIAL_BAUD = 9600;
 
 unsigned long lastMoveTime = 0;
 bool penLoweredAfterMove = false;
-
+bool flip_x = false;
+bool flip_y = true;
 
 // --- Hardware Setup ---
 AF_Stepper motorX(STEPS_PER_REV, MOTOR_X_PORT);
 AF_Stepper motorY(STEPS_PER_REV, MOTOR_Y_PORT);
 Servo penServo;
 
-// --- Plotter State ---
+// --- Plotter State d---
+
 struct Point {
   float x = DRAWING_AREA_X_MIN;
   float y = DRAWING_AREA_Y_MIN;
@@ -51,7 +53,7 @@ void setup() {
 
   motorX.setSpeed(600);
   motorY.setSpeed(600);
-  
+
   penServo.attach(SERVO_PIN);
   liftPen();
 
@@ -84,11 +86,13 @@ void loop() {
       }
     }
   }
-  if (!penLoweredAfterMove && millis() - lastMoveTime > 10000) {
-  lowerPen();
-  penLoweredAfterMove = true;
-}
 
+  // Pen auto-down logic after 10s idle
+  if (!penLoweredAfterMove && millis() - lastMoveTime > 10000) {
+    lowerPen();
+    penLoweredAfterMove = true;
+    if (VERBOSE) Serial.println("Auto-pen-down after idle.");
+  }
 }
 
 // --- G-Code Parser ---
@@ -103,6 +107,13 @@ void parseGCode(const char* line) {
     if (yPtr) y = atof(yPtr + 1);
 
     moveTo(x, y);
+  } else if (strstr(line, "G4")) {
+    // Dwell: G4 P100 (wait 100ms)
+    char* pPtr = strchr(line, 'P');
+    if (pPtr) {
+      int ms = atoi(pPtr + 1);
+      if (ms > 0) delay(ms);
+    }
   } else if (strstr(line, "M300")) {
     char* sPtr = strchr(line, 'S');
     if (sPtr) {
@@ -128,12 +139,18 @@ void moveTo(float xTarget, float yTarget) {
   xTarget = constrain(xTarget, DRAWING_AREA_X_MIN, DRAWING_AREA_X_MAX);
   yTarget = constrain(yTarget, DRAWING_AREA_Y_MIN, DRAWING_AREA_Y_MAX);
 
-  // Convert to steps (no division!)
-  long xSteps = xTarget * STEPS_PER_MM_X;
-  long ySteps = -yTarget * STEPS_PER_MM_Y; // Flip Y-axis
+  // Optionally flip axes
+  float xTargetFlipped = flip_x ? -xTarget : xTarget;
+  float yTargetFlipped = flip_y ? -yTarget : yTarget;
+  float xCurrentFlipped = flip_x ? -currentPos.x : currentPos.x;
+  float yCurrentFlipped = flip_y ? -currentPos.y : currentPos.y;
 
-  long xCurrent = currentPos.x * STEPS_PER_MM_X;
-  long yCurrent = -currentPos.y * STEPS_PER_MM_Y;
+  // Convert to steps (no division!)
+  long xSteps = xTargetFlipped * STEPS_PER_MM_X;
+  long ySteps = yTargetFlipped * STEPS_PER_MM_Y;
+
+  long xCurrent = xCurrentFlipped * STEPS_PER_MM_X;
+  long yCurrent = yCurrentFlipped * STEPS_PER_MM_Y;
 
   long dx = abs(xSteps - xCurrent);
   long dy = abs(ySteps - yCurrent);
@@ -166,6 +183,7 @@ void moveTo(float xTarget, float yTarget) {
 
   delay(LINE_DELAY);
 
+  // Update currentPos with the unflipped target values
   currentPos.x = xTarget;
   currentPos.y = yTarget;
 
@@ -176,8 +194,7 @@ void moveTo(float xTarget, float yTarget) {
     Serial.println(currentPos.y);
   }
   lastMoveTime = millis();
-penLoweredAfterMove = false;
-
+  penLoweredAfterMove = false;
 }
 
 // --- Pen Functions ---
