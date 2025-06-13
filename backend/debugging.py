@@ -9,6 +9,9 @@ PEN_UP = 50
 PEN_DOWN = 30
 FLIP_Y = False  # Set True if Y should be flipped (e.g., for screen vs machine)
 
+
+
+#basically draws the gcode on Coordinate plane for debugging purposes
 class Point:
     def __init__(self, x=0, y=0):
         self.x = x

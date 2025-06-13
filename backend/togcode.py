@@ -25,14 +25,14 @@ MAX_Y = 14.4
 SCALE_X = 1 / STEPS_PER_MM_X
 SCALE_Y = 1 / STEPS_PER_MM_Y
 
-def flip_coords(x, y):
+def flip_coords(x, y): # used to flip the x or y according to the config
     if FLIP_X:
         x = MAX_X - x
     if FLIP_Y:
         y = MAX_Y - y
     return x, y
 
-class GCodeContext:
+class GCodeContext: #this class basically writes the content of the gcode folder
     def __init__(self):
         self.gcode = []
         self.pen_is_down = False
@@ -62,8 +62,8 @@ class GCodeContext:
         self.gcode.append("G1 X0 Y0")
         return "\n".join(self.gcode)
 
-def path_to_points(path, num_samples = 4):
-    """Convert an svgpathtools Path into a list of (x, y) points, sampling curves."""
+def path_to_points(path, num_samples = 4): # Samples points along an SVG path segment, scales them to mm, and removes near-duplicate consecutive points + you can change num_samples for accuracy
+    #Convert an svgpathtools Path into a list of (x, y) points, sampling curves
     points = []
     for seg in path:
         for i in range(num_samples+1):
@@ -71,14 +71,14 @@ def path_to_points(path, num_samples = 4):
             pt = seg.point(t)
             x, y = pt.real, pt.imag
             points.append((x * SCALE_X, y * SCALE_Y))
-    # Remove duplicate consecutive points:
+    # Remove duplicate consecutive points(that are so close to each other):
     filtered = []
     for pt in points:
         if not filtered or math.hypot(pt[0]-filtered[-1][0], pt[1]-filtered[-1][1]) > 1e-4:
             filtered.append(pt)
     return filtered
 
-def scale_and_center(paths, max_x=MAX_X, max_y=MAX_Y):
+def scale_and_center(paths, max_x=MAX_X, max_y=MAX_Y): #as the name says
     all_pts = [pt for path in paths for pt in path]
     if not all_pts:
         return paths
@@ -103,16 +103,14 @@ def scale_and_center(paths, max_x=MAX_X, max_y=MAX_Y):
         ])
     return new_paths
 
-def convert_svg_to_gcode(input_svg, output_gcode):
+def convert_svg_to_gcode(input_svg, output_gcode):   # heavily edited by AI, basically what it does: loads SVG paths, samples and scales them, then generates pen up/down G-code to trace the shapes
     paths, _ = svg2paths(input_svg)
     all_path_pts = []
     for path in paths:
         pts = path_to_points(path)
         if pts:
             all_path_pts.append(pts)
-    # Center and scale
     all_path_pts = scale_and_center(all_path_pts)
-    # GCode generation
     ctx = GCodeContext()
     for path in all_path_pts:
         if len(path) < 2:
@@ -122,12 +120,12 @@ def convert_svg_to_gcode(input_svg, output_gcode):
         ctx.pen_down()
         last_x, last_y = path[0]
         for x, y in path[1:]:
-            # Only add if distance is significant
+            # Only add if distance is significant simply no close to each other points
             if math.hypot(x-last_x, y-last_y) > 0.01:
                 ctx.move_to(x, y)
                 last_x, last_y = x, y
         ctx.pen_up()
-    # Home
+    # back to x0 y0
     ctx.pen_up()
     ctx.move_to(0, 0, rapid=True)
     with open(output_gcode, "w") as f:

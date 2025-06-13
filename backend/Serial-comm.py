@@ -64,7 +64,7 @@ class GCodeSender:
                         self.current_line += 1
                         break  
                 else:
-                    time.sleep(0.05)  # Give Arduino more time to reply if needed
+                    time.sleep(0.05)
 
             time.sleep(0.1)  # Small delay for serial communication
 
