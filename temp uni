@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Rosa Shop</title>
+  <style>
+    body { font-family: 'Segoe UI', Arial, sans-serif; background: #f9f3ee; padding: 20px; color: #333; }
+    
+    /* Grid layout for cards */
+    .container { display: flex; flex-wrap: wrap; gap: 15px; justify-content: flex-start; }
+    
+    .card { 
+      background: white; 
+      border: 1px solid #eee; 
+      border-radius: 12px; 
+      padding: 15px; 
+      width: 200px; 
+      text-align: center; 
+      box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+    }
+
+    /* Keep images uniform */
+    .card img { 
+      width: 100%; 
+      height: 120px; 
+      object-fit: cover; 
+      border-radius: 8px; 
+      margin-bottom: 10px; 
+    }
+
+    h3 { margin: 10px 0 5px 0; font-size: 1.1rem; }
+    p { margin: 5px 0; font-size: 0.9rem; }
+    
+    button { 
+      background: #1a3a2e; 
+      color: white; 
+      border: none; 
+      padding: 10px 20px; 
+      border-radius: 6px; 
+      cursor: pointer; 
+      width: 100%;
+      font-weight: bold;
+      transition: background 0.2s;
+    }
+    
+    button:hover { background: #2d5a49; }
+    button:disabled { background: #aaa; }
+    
+    .bad { color: #d9534f; font-weight: bold; }
+    .ok  { color: #5cb85c; font-weight: bold; }
+    
+    #cart-box { 
+      margin-top: 30px; 
+      padding: 15px; 
+      background: #fff; 
+      border-radius: 8px; 
+      border-left: 5px solid #1a3a2e;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>🌹 Rosa Shop &nbsp;&nbsp; 💰 Wallet: <span id="wallet">20.00</span> JD</h2>
+  <hr style="border: 0.5px solid #ddd; margin-bottom: 20px;">
+
+  <div class="container">
+    <div class="card">
+      <img src="https://images.unsplash.com/photo-1548849170-362584851722?w=400" alt="Red Rose">
+      <h3>Red Velvet</h3>
+      <p>22°C | 60% Humid</p>
+      <p class="ok">✓ Fresh</p>
+      <p><strong>2.50 JD</strong></p>
+      <button onclick="buy('Red Velvet', 2.50)">Buy</button>
+    </div>
+
+    <div class="card">
+      <img src="https://images.unsplash.com/photo-1525310238294-7cc013063673?w=400" alt="Pink Rose">
+      <h3>Pink Blush</h3>
+      <p>31°C | 55% Humid</p>
+      <p class="bad">⚠ Too hot!</p>
+      <p><strong>2.00 JD</strong></p>
+      <button onclick="buy('Pink Blush', 2.00)">Buy</button>
+    </div>
+
+    <div class="card">
+      <img src="https://images.unsplash.com/photo-1533616688419-b7a585564566?w=400" alt="White Rose">
+      <h3>White Pearl</h3>
+      <p>20°C | 82% Humid</p>
+      <p class="bad">⚠ Too humid!</p>
+      <p><strong>3.00 JD</strong></p>
+      <button onclick="buy('White Pearl', 3.00)">Buy</button>
+    </div>
+
+    <div class="card">
+      <img src="https://images.unsplash.com/photo-1565011523534-747a8601f10a?w=400" alt="Lavender">
+      <h3>Lavender</h3>
+      <p>19°C | 58% Humid</p>
+      <p class="ok">✓ Fresh</p>
+      <p><strong>2.75 JD</strong></p>
+      <button onclick="buy('Lavender', 2.75)">Buy</button>
+    </div>
+  </div>
+
+  <div id="cart-box">
+    <h3>🛒 My Roses</h3>
+    <div id="cart">Nothing bought yet.</div>
+  </div>
+
+  <script>
+    let wallet = 20.00;
+    let cart = [];
+
+    function buy(name, price) {
+      if (wallet < price) {
+        alert("Not enough money!");
+        return;
+      }
+      wallet -= price;
+      cart.push(name);
+      document.getElementById("wallet").textContent = wallet.toFixed(2);
+      document.getElementById("cart").textContent = cart.join(", ");
+    }
+  </script>
+
+</body>
+</html>
